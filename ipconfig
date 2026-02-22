@@ -1,0 +1,408 @@
+#!/bin/bash
+
+# Function to convert CIDR prefix to Dotted Decimal Subnet Mask
+cidr_to_netmask() {
+    local cidr=$1
+    local mask=""
+    local i
+    for ((i=0; i<4; i++)); do
+        if [ "$cidr" -ge 8 ]; then
+            mask+="255"
+            ((cidr-=8))
+        elif [ "$cidr" -gt 0 ]; then
+            local val=$(( 256 - (1 << (8 - cidr)) ))
+            mask+="$val"
+            cidr=0
+        else
+            mask+="0"
+        fi
+        [ "$i" -lt 3 ] && mask+="."
+    done
+    echo "$mask"
+}
+
+# Help Menu
+show_help() {
+    echo ""
+    echo "USAGE:"
+    echo "    ipconfig [/? | /all | /renew [adapter] | /release [adapter] |"
+    echo "              /renew6 [adapter] | /release6 [adapter] |"
+    echo "              /flushdns | /displaydns | /registerdns |"
+    echo "              /showclassid adapter |"
+    echo "              /setclassid adapter [classid] ]"
+    echo ""
+    echo "OPTIONS:"
+    echo "    /?               Display this help message"
+    echo "    /all             Display full configuration information."
+    echo "    /release         Release the IPv4 address for the specified adapter."
+    echo "    /release6        Release the IPv6 address for the specified adapter."
+    echo "    /renew           Renew the IPv4 address for the specified adapter."
+    echo "    /renew6          Renew the IPv6 address for the specified adapter."
+    echo "    /flushdns        Purges the DNS Resolver cache."
+    echo "    /registerdns     Refreshes all DHCP leases and re-registers DNS names."
+    echo "    /displaydns      Display the contents of the DNS Resolver Cache."
+    echo "    /showclassid     Displays all the DHCP class IDs allowed for adapter."
+    echo "    /setclassid      Modifies the dhcp class id."
+    echo ""
+}
+
+show_all=false
+cmd="${1,,}"
+adapter_arg="$2"
+classid_arg="$3"
+
+is_protected_interface() {
+    local iface=$1
+    if [[ "$iface" == "lo" ]] || [[ "$iface" == docker* ]] || [[ "$iface" == veth* ]] || [[ "$iface" == virbr* ]] || [[ "$iface" == br-* ]]; then
+        return 0
+    else
+        return 1
+    fi
+}
+
+case "$cmd" in
+    /?|-h|--help)
+        show_help
+        exit 0
+        ;;
+    /all|-all)
+        show_all=true
+        ;;
+    /release|-release|/release6|-release6)
+        echo ""
+        echo "Linux IP Configuration"
+        echo "Releasing IP addresses..."
+        if [[ -n "$adapter_arg" ]]; then
+            if is_protected_interface "$adapter_arg"; then
+                echo "Error: The operation is not supported on loopback or virtual bridge interfaces ($adapter_arg)."
+                exit 1
+            fi
+            interfaces="$adapter_arg"
+        else
+            interfaces=$(ls -A /sys/class/net | grep -vE '^lo$|^docker|^veth|^virbr|^br-')
+        fi
+        for iface in $interfaces; do
+            if command -v dhclient &> /dev/null; then
+                if [[ "$cmd" == *6 ]]; then
+                    sudo dhclient -6 -r "$iface" 2>/dev/null
+                else
+                    sudo dhclient -r "$iface" 2>/dev/null
+                fi
+            elif command -v nmcli &> /dev/null; then
+                sudo nmcli device disconnect "$iface" >/dev/null 2>&1
+            fi
+        done
+        echo "Successfully released IP addresses."
+        exit 0
+        ;;
+    /renew|-renew|/renew6|-renew6)
+        echo ""
+        echo "Linux IP Configuration"
+        echo "Renewing IP addresses..."
+        if [[ -n "$adapter_arg" ]]; then
+            if is_protected_interface "$adapter_arg"; then
+                echo "Error: The operation is not supported on loopback or virtual bridge interfaces ($adapter_arg)."
+                exit 1
+            fi
+            interfaces="$adapter_arg"
+        else
+            interfaces=$(ls -A /sys/class/net | grep -vE '^lo$|^docker|^veth|^virbr|^br-')
+        fi
+        for iface in $interfaces; do
+            if command -v dhclient &> /dev/null; then
+                if [[ "$cmd" == *6 ]]; then
+                    sudo dhclient -6 "$iface" 2>/dev/null
+                else
+                    sudo dhclient "$iface" 2>/dev/null
+                fi
+            elif command -v nmcli &> /dev/null; then
+                sudo nmcli device connect "$iface" >/dev/null 2>&1
+            fi
+        done
+        echo "Successfully renewed IP addresses."
+        exit 0
+        ;;
+    /flushdns|-flushdns)
+        echo ""
+        echo "Linux IP Configuration"
+        if command -v resolvectl &> /dev/null; then
+            resolvectl flush-caches
+            echo "Successfully flushed the DNS Resolver Cache."
+        elif command -v systemd-resolve &> /dev/null; then
+            systemd-resolve --flush-caches
+            echo "Successfully flushed the DNS Resolver Cache."
+        fi
+        exit 0
+        ;;
+    /displaydns|-displaydns)
+        echo ""
+        echo "Linux IP Configuration"
+        echo "Dumping DNS Cache..."
+        if systemctl is-active --quiet systemd-resolved; then
+            sudo killall -USR1 systemd-resolved
+            echo "Cache dumped to system journal. Showing recent entries:"
+            sudo journalctl -u systemd-resolved -n 30 --no-pager
+        fi
+        exit 0
+        ;;
+    /registerdns|-registerdns)
+        echo ""
+        echo "Linux IP Configuration"
+        echo "Initiating manual dynamic DNS registration..."
+        if command -v nmcli &> /dev/null; then
+            for conn in $(nmcli -t -f UUID,STATE con | grep ':activated' | cut -d: -f1); do
+                sudo nmcli con up uuid "$conn" >/dev/null 2>&1
+            done
+            echo "Registration of the DNS resource records for all adapters has been initiated."
+        fi
+        exit 0
+        ;;
+    /showclassid|-showclassid)
+        echo ""
+        echo "Linux IP Configuration"
+        if [[ -z "$adapter_arg" ]]; then echo "Error: You must specify an adapter."; exit 1; fi
+        if is_protected_interface "$adapter_arg"; then echo "Error: DHCP Class IDs cannot be queried on loopback."; exit 1; fi
+        if command -v nmcli &> /dev/null; then
+            conn_name=$(nmcli -t -f GENERAL.CONNECTION device show "$adapter_arg" 2>/dev/null | cut -d: -f2-)
+            if [[ -n "$conn_name" ]]; then
+                class_id=$(nmcli -t -f ipv4.dhcp-client-id connection show "$conn_name" 2>/dev/null | cut -d: -f2-)
+                if [[ -n "$class_id" ]]; then echo "DHCP Class ID for $adapter_arg: $class_id"; else echo "No DHCP Class ID configured for $adapter_arg."; fi
+            fi
+        fi
+        exit 0
+        ;;
+    /setclassid|-setclassid)
+        echo ""
+        echo "Linux IP Configuration"
+        if [[ -z "$adapter_arg" ]]; then echo "Error: You must specify an adapter."; exit 1; fi
+        if is_protected_interface "$adapter_arg"; then echo "Error: DHCP Class IDs cannot be set on loopback."; exit 1; fi
+        if command -v nmcli &> /dev/null; then
+            conn_name=$(nmcli -t -f GENERAL.CONNECTION device show "$adapter_arg" 2>/dev/null | cut -d: -f2-)
+            if [[ -z "$classid_arg" ]]; then
+                sudo nmcli con modify "$conn_name" ipv4.dhcp-client-id ""
+                echo "Successfully cleared DHCP Class ID for $adapter_arg."
+            else
+                sudo nmcli con modify "$conn_name" ipv4.dhcp-client-id "$classid_arg"
+                echo "Successfully set DHCP Class ID for $adapter_arg to: $classid_arg"
+            fi
+            sudo nmcli con up "$conn_name" >/dev/null 2>&1
+        fi
+        exit 0
+        ;;
+    "")
+        show_all=false
+        ;;
+    *)
+        echo "Error: unrecognized or incomplete command line."
+        show_help
+        exit 1
+        ;;
+esac
+
+# Main Output Execution
+echo ""
+echo "Linux IP Configuration"
+echo ""
+
+if [ "$show_all" = true ]; then
+    echo "   Host Name . . . . . . . . . . . . : $(hostname)"
+    
+    # Hide the ugly "(none)" if a DNS suffix isn't present
+    p_dns_suffix=$(hostname -d 2>/dev/null)
+    if [[ "$p_dns_suffix" == "(none)" || -z "$p_dns_suffix" ]]; then
+        echo "   Primary Dns Suffix  . . . . . . . : "
+    else
+        echo "   Primary Dns Suffix  . . . . . . . : $p_dns_suffix"
+    fi
+    
+    echo "   IP Routing Enabled. . . . . . . . : $(cat /proc/sys/net/ipv4/ip_forward 2>/dev/null | sed 's/1/Yes/;s/0/No/')"
+    echo ""
+fi
+
+for iface in $(ls -A /sys/class/net); do
+    
+    if [[ "$iface" == "lo" ]]; then
+        continue
+    fi
+
+    # Grab the full lines to parse for flags
+    ip4_line=$(ip -4 addr show dev "$iface" 2>/dev/null | awk '/inet / {print $0}')
+    link_ip6_line=$(ip -6 addr show dev "$iface" scope link 2>/dev/null | awk '/inet6 / {print $0}' | head -n 1)
+    global_ip6_line=$(ip -6 addr show dev "$iface" scope global 2>/dev/null | awk '/inet6 / {print $0}' | head -n 1)
+    
+    # Extract just the IP values
+    ip_info=$(echo "$ip4_line" | awk '{print $2}')
+    link_ipv6_info=$(echo "$link_ip6_line" | awk '{print $2}')
+    global_ipv6_info=$(echo "$global_ip6_line" | awk '{print $2}')
+    
+    mac_addr=$(cat "/sys/class/net/$iface/address" 2>/dev/null | tr '[:lower:]' '[:upper:]' | tr ':' '-')
+    ifindex=$(cat "/sys/class/net/$iface/ifindex" 2>/dev/null)
+    
+    if [[ -z "$ip_info" ]] && [ "$show_all" = false ]; then
+        continue
+    fi
+
+    # Check for IP Conflicts (Duplicate Address Detection failure)
+    conflict="No"
+    if echo "$ip4_line $link_ip6_line $global_ip6_line" | grep -q 'dadfailed'; then
+        conflict="Yes"
+    fi
+
+    v4_type="(Static)"
+    global_v6_type="(Static)"
+    link_v6_type="(Auto)" # Link-local is generated by kernel natively
+
+    # IPv4 Type Detection - strictly relies on Kernel to prevent NetworkManager GUI bugs
+    if echo "$ip4_line" | grep -q 'dynamic'; then v4_type="(DHCP)"; fi
+    if ip -4 route show dev "$iface" 2>/dev/null | grep -q 'dhcp'; then v4_type="(DHCP)"; fi
+    valid_lft_str=$(ip -4 addr show dev "$iface" 2>/dev/null | grep -o 'valid_lft [^ ]*' | head -n 1 | awk '{print $2}' | sed 's/sec//')
+    if [[ "$valid_lft_str" != "forever" && "$valid_lft_str" =~ ^[0-9]+$ ]]; then v4_type="(DHCP)"; fi
+
+    # IPv6 Type Detection
+    if echo "$global_ip6_line" | grep -q -E 'dynamic|autoconf|mngtmpaddr'; then global_v6_type="(Auto)"; fi
+    if ip -6 route show dev "$iface" 2>/dev/null | grep -q -E 'ra|dhcp|expires'; then global_v6_type="(Auto)"; fi
+    v6_valid_lft=$(ip -6 addr show dev "$iface" scope global 2>/dev/null | grep -o 'valid_lft [^ ]*' | head -n 1 | awk '{print $2}' | sed 's/sec//')
+    if [[ "$v6_valid_lft" != "forever" && "$v6_valid_lft" =~ ^[0-9]+$ ]]; then global_v6_type="(Auto)"; fi
+
+    ipv4=$(echo "$ip_info" | cut -d'/' -f1)
+    prefix=$(echo "$ip_info" | cut -d'/' -f2)
+    gateway=$(ip route show dev "$iface" 2>/dev/null | awk '/default/ {print $3}')
+    gateway6=$(ip -6 route show default dev "$iface" 2>/dev/null | awk '{print $3}' | head -n 1)
+
+    if [[ "$iface" == wl* ]]; then
+        adapter="Wireless LAN adapter"
+    elif [[ "$iface" == en* ]] || [[ "$iface" == eth* ]]; then
+        adapter="Ethernet adapter"
+    elif [[ "$iface" == tun* ]] || [[ "$iface" == wg* ]] || [[ "$iface" == vpn* ]]; then
+        adapter="Tunnel adapter"
+    elif [[ "$iface" == docker* ]] || [[ "$iface" == veth* ]] || [[ "$iface" == br* ]] || [[ "$iface" == virbr* ]]; then
+        adapter="Virtual/Bridge adapter"
+    else
+        adapter="Network adapter"
+    fi
+
+    echo "$adapter $iface:"
+    echo ""
+    
+    if [ "$show_all" = true ]; then
+        dns_suffix=""
+        description=""
+        
+        if command -v nmcli &> /dev/null; then
+            dns_suffix=$(nmcli -t -f IP4.DOMAIN device show "$iface" 2>/dev/null | cut -d: -f2-)
+            description=$(nmcli -t -f GENERAL.PRODUCT device show "$iface" 2>/dev/null | cut -d: -f2-)
+        fi
+        
+        if [[ -z "$description" ]]; then
+            description="Linux Network Connection"
+        fi
+
+        echo "   Connection-specific DNS Suffix  . : $dns_suffix"
+        echo "   Description . . . . . . . . . . . : $description"
+        echo "   Physical Address. . . . . . . . . : $mac_addr"
+        
+        # Dynamically map DHCP Enabled based on the actual status
+        if [[ "$v4_type" == "(DHCP)" ]]; then
+            echo "   DHCP Enabled. . . . . . . . . . . : Yes"
+        else
+            echo "   DHCP Enabled. . . . . . . . . . . : No"
+        fi
+        
+        echo "   Autoconfiguration Enabled . . . . : Yes"
+    fi
+
+    if [[ -n "$link_ipv6_info" ]]; then
+        link_ipv6_clean=$(echo "$link_ipv6_info" | cut -d'/' -f1)
+        echo "   Link-local IPv6 Address . . . . . : $link_ipv6_clean%$ifindex$link_v6_type"
+    fi
+    
+    if [[ -n "$global_ipv6_info" ]] && [ "$show_all" = true ]; then
+        global_ipv6_clean=$(echo "$global_ipv6_info" | cut -d'/' -f1)
+        echo "   IPv6 Address. . . . . . . . . . . : $global_ipv6_clean$global_v6_type"
+    fi
+    
+    if [[ -n "$ipv4" ]]; then
+        echo "   IPv4 Address. . . . . . . . . . . : $ipv4$v4_type"
+        subnet_dec=$(cidr_to_netmask "$prefix")
+        echo "   Subnet Mask . . . . . . . . . . . : $subnet_dec"
+    fi
+    
+    if [[ "$conflict" == "Yes" ]]; then
+        echo "   Address Conflict Detected . . . . : Yes"
+    elif [ "$show_all" = true ]; then
+        echo "   Address Conflict Detected . . . . : No"
+    fi
+
+    if [ "$show_all" = true ] && [[ -n "$ipv4" ]] && [[ "$v4_type" == "(DHCP)" ]]; then
+        lease_obtained=""
+        lease_expires=""
+        
+        if [[ -n "$valid_lft_str" && "$valid_lft_str" != "forever" && "$valid_lft_str" =~ ^[0-9]+$ ]]; then
+            now_sec=$(date +%s)
+            expires_sec=$((now_sec + valid_lft_str))
+            lease_expires=$(date -d "@$expires_sec" "+%A, %B %-d, %Y %-I:%M:%S %p")
+            
+            # Fetch the total duration and strip whitespace to prevent regex breaking
+            lease_time=$(nmcli -t -f DHCP4.OPTION device show "$iface" 2>/dev/null | grep -E 'dhcp_lease_time|lease_time' | head -n 1 | cut -d= -f2- | tr -d ' ')
+            
+            if [[ -n "$lease_time" && "$lease_time" =~ ^[0-9]+$ ]]; then
+                obtained_sec=$((expires_sec - lease_time))
+                lease_obtained=$(date -d "@$obtained_sec" "+%A, %B %-d, %Y %-I:%M:%S %p")
+                echo "   Lease Obtained. . . . . . . . . . : $lease_obtained"
+            fi
+            echo "   Lease Expires . . . . . . . . . . : $lease_expires"
+        fi
+    fi
+    
+    if [[ -n "$gateway" ]] || [[ -n "$gateway6" ]]; then
+        if [[ -n "$gateway6" ]]; then
+            echo "   Default Gateway . . . . . . . . . : $gateway6"
+            if [[ -n "$gateway" ]]; then
+                echo "                                       $gateway"
+            fi
+        else
+            echo "   Default Gateway . . . . . . . . . : $gateway"
+        fi
+    elif [[ -n "$ipv4" ]]; then
+        echo "   Default Gateway . . . . . . . . . : "
+    fi
+
+    if [ "$show_all" = true ] && [[ -n "$ipv4" ]]; then
+        if command -v nmcli &> /dev/null; then
+            dhcp_server=$(nmcli -t -f DHCP4.OPTION device show "$iface" 2>/dev/null | grep 'dhcp_server_identifier' | cut -d= -f2- | tr -d ' ')
+            if [[ -n "$dhcp_server" ]]; then
+                echo "   DHCP Server . . . . . . . . . . . : $dhcp_server"
+            fi
+            
+            conn_name=$(nmcli -t -f GENERAL.CONNECTION device show "$iface" 2>/dev/null | cut -d: -f2-)
+            if [[ -n "$conn_name" ]]; then
+                duid=$(nmcli -t -f ipv6.dhcp-duid connection show "$conn_name" 2>/dev/null | cut -d: -f2-)
+                if [[ -n "$duid" ]]; then
+                    echo "   DHCPv6 IAID . . . . . . . . . . . : $ifindex"
+                    echo "   DHCPv6 Client DUID. . . . . . . . : $duid"
+                fi
+            fi
+        fi
+
+        dns_servers=""
+        if command -v resolvectl &> /dev/null; then
+            dns_servers=$(resolvectl dns "$iface" 2>/dev/null | awk -F': ' '{print $2}')
+        fi
+        if [[ -z "$dns_servers" ]] && command -v nmcli &> /dev/null; then
+            dns_servers=$(nmcli -t -f IP4.DNS device show "$iface" 2>/dev/null | cut -d: -f2- | paste -sd " " -)
+        fi
+        if [[ -z "$dns_servers" ]]; then
+            dns_servers=$(awk '/^nameserver/ {print $2}' /etc/resolv.conf 2>/dev/null | grep -v '127.0.0.53' | paste -sd " " -)
+        fi
+
+        if [[ -n "$dns_servers" ]]; then
+            first_dns=$(echo "$dns_servers" | awk '{print $1}')
+            echo "   DNS Servers . . . . . . . . . . . : $first_dns"
+            for dns in $(echo "$dns_servers" | awk '{for(i=2;i<=NF;++i) print $i}'); do
+                 echo "                                       $dns"
+            done
+        fi
+    fi
+    
+    echo ""
+done
