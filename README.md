@@ -24,7 +24,7 @@ The included installer automatically detects your OS and grabs the necessary cor
 Clone the repository, make the installer executable, and run it. The installer will dynamically handle `sudo` prompts depending on your package manager.
 
 ```bash
-git clone [https://github.com/YOUR-USERNAME/ipconfig-linux.git](https://github.com/YOUR-USERNAME/ipconfig-linux.git)
+git clone https://github.com/ZeroIndex-x636A06/ipconfig-for-linux.git
 cd ipconfig-for-linux
 chmod +x install.sh
 ./install.sh
@@ -51,7 +51,7 @@ ipconfig /?
 ## Uninstallation
 If you ever want to remove the command from your system path, simply run the included safe uninstaller. It strictly removes the script without touching your critical system dependencies.
 ```bash
-git clone [https://github.com/YOUR-USERNAME/ipconfig-linux.git](https://github.com/YOUR-USERNAME/ipconfig-linux.git)
+git clone https://github.com/ZeroIndex-x636A06/ipconfig-for-linux.git
 cd ipconfig-for-linux
 chmod +x uninstall.sh
 ./uninstall.sh
