@@ -316,7 +316,8 @@ for iface in $(ls -A /sys/class/net); do
         echo "   Link-local IPv6 Address . . . . . : $link_ipv6_clean%$ifindex$link_v6_type"
     fi
     
-    if [[ -n "$global_ipv6_info" ]] && [ "$show_all" = true ]; then
+    # Removed the check for show_all=true so Global IPv6 shows on standard output
+    if [[ -n "$global_ipv6_info" ]]; then
         global_ipv6_clean=$(echo "$global_ipv6_info" | cut -d'/' -f1)
         echo "   IPv6 Address. . . . . . . . . . . : $global_ipv6_clean$global_v6_type"
     fi
