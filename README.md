@@ -10,7 +10,7 @@ This script brings the classic `ipconfig` experience natively to Linux. It strik
 * **Smart DHCP & IPv6 Parsing:** Dynamically calculates exact DHCP lease obtained/expiration times and intelligently tags IP addresses as `(DHCP)`, `(Auto)`, or `(Static)`.
 * **Intelligent Interface Protection:** Hardcoded to prevent destructive commands (like `/release`) from accidentally breaking `lo`, `docker0`, `veth`, or virtual bridge interfaces.
 * **IP Conflict Detection:** Actively watches the Linux kernel for Duplicate Address Detection (DAD) failures and alerts you on the output.
-* **Linux-Optimized Data:** Leaves out legacy Windows protocols and focuses entirely on the data that actually matters to a modern Linux environment.
+* **Uses Linux Nomenclature:** Uses Linux network nomenclature while simplifying the data to align with the simplicity of ipconfig on Windows
 
 ## Supported Distributions
 The included installer automatically detects your OS and grabs the necessary core dependencies (`iproute2`, `networkmanager`, `coreutils`, `gawk`, `sed`, `grep`).
