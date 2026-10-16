@@ -1,0 +1,135 @@
+# Weekly-audit harness: installs ipconfig the README way and checks its
+# output against the kernel's view of the runner's real network.
+name: audit
+
+on:
+  workflow_dispatch:
+  push:
+    paths: ['.github/workflows/audit.yml']
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: syntax
+        continue-on-error: true
+        run: for f in ipconfig install.sh uninstall.sh; do bash -n "$f"; done
+      - id: shellcheck_errors
+        continue-on-error: true
+        run: shellcheck -S error ipconfig install.sh uninstall.sh
+      - name: shellcheck (all, informational)
+        run: shellcheck ipconfig install.sh uninstall.sh || true
+      - id: secret_scan
+        continue-on-error: true
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: summary
+        if: always()
+        env:
+          STEPS: ${{ toJSON(steps) }}
+        run: |
+          echo "$STEPS" | jq -r 'to_entries[] | "AUDIT \(.key): \(.value.outcome)"' | tee -a "$GITHUB_STEP_SUMMARY"
+          ! echo "$STEPS" | jq -e 'to_entries[] | select(.value.outcome=="failure")' >/dev/null
+
+  # Real VM with systemd-resolved and a live NIC.
+  run-ubuntu:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: ipconfig src   # path with spaces on purpose
+      - id: install
+        continue-on-error: true
+        working-directory: ipconfig src
+        run: chmod +x install.sh && ./install.sh
+      - id: installed
+        continue-on-error: true
+        run: test -x /usr/local/bin/ipconfig
+      - id: default_view
+        continue-on-error: true
+        run: |
+          out=$(ipconfig 2>&1); echo "$out"
+          if grep -qiE 'syntax error|command not found|unbound variable' <<<"$out"; then exit 1; fi
+          # Every IPv4 address the kernel reports on a global-scope NIC must appear.
+          for a in $(ip -4 -o addr show scope global | awk '{print $4}' | cut -d/ -f1); do
+            grep -qF "$a" <<<"$out" || { echo "missing $a"; exit 1; }
+          done
+      - id: all_view
+        continue-on-error: true
+        run: |
+          out=$(ipconfig /all 2>&1); echo "$out"
+          if grep -qiE 'syntax error|command not found|unbound variable' <<<"$out"; then exit 1; fi
+          mac=$(ip -o link show "$(ip route show default | awk '{print $5; exit}')" | grep -o 'link/ether [^ ]*' | cut -d' ' -f2)
+          grep -qiF "$mac" <<<"$out" || grep -qiF "${mac//:/-}" <<<"$out"
+      - id: gateway_single_line  # regression check for issue #2
+        continue-on-error: true
+        run: |
+          gw=$(ip route show default | awk '{print $3; exit}')
+          ipconfig | grep -i 'gateway' | tee /dev/stderr | grep -qF "$gw"
+      - id: help
+        continue-on-error: true
+        run: ipconfig '/?' | grep -qi release
+      - id: bad_command_rejected
+        continue-on-error: true
+        run: '! ipconfig /notacommand'
+      - id: release_lo_refused
+        continue-on-error: true
+        run: |
+          out=$(ipconfig /release lo 2>&1 || true); echo "$out"
+          ip -4 addr show lo | grep -q 127.0.0.1
+      - id: flushdns
+        continue-on-error: true
+        run: ipconfig /flushdns
+      - id: uninstall
+        continue-on-error: true
+        working-directory: ipconfig src
+        run: chmod +x uninstall.sh && ./uninstall.sh && test ! -e /usr/local/bin/ipconfig
+      - name: summary
+        if: always()
+        env:
+          STEPS: ${{ toJSON(steps) }}
+        run: |
+          echo "$STEPS" | jq -r 'to_entries[] | "AUDIT \(.key): \(.value.outcome)"' | tee -a "$GITHUB_STEP_SUMMARY"
+          ! echo "$STEPS" | jq -e 'to_entries[] | select(.value.outcome=="failure")' >/dev/null
+
+  # Installer branches for each distro family the README lists.
+  install-distros:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ['archlinux:latest', 'fedora:latest', 'debian:stable', 'opensuse/tumbleweed:latest']
+    container: ${{ matrix.image }}
+    steps:
+      - name: bootstrap sudo
+        run: |
+          if command -v pacman >/dev/null; then pacman -Sy --noconfirm sudo git jq tar
+          elif command -v dnf >/dev/null; then dnf install -y sudo git jq tar
+          elif command -v zypper >/dev/null; then zypper -n in sudo git jq tar gzip
+          else apt-get update && apt-get install -y sudo git jq; fi
+      - uses: actions/checkout@v4
+      - id: install
+        continue-on-error: true
+        run: ./install.sh
+      - id: deps_present
+        continue-on-error: true
+        run: command -v ip && command -v nmcli && command -v gawk
+      - id: runs
+        continue-on-error: true
+        run: |
+          out=$(ipconfig 2>&1); echo "$out"
+          if grep -qiE 'syntax error|command not found|unbound variable' <<<"$out"; then exit 1; fi
+      - name: summary
+        if: always()
+        env:
+          STEPS: ${{ toJSON(steps) }}
+        run: |
+          echo "$STEPS" | jq -r 'to_entries[] | "AUDIT \(.key): \(.value.outcome)"' | tee -a "$GITHUB_STEP_SUMMARY"
+          ! echo "$STEPS" | jq -e 'to_entries[] | select(.value.outcome=="failure")' >/dev/null
