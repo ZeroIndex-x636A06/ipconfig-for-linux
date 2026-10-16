@@ -107,6 +107,9 @@ jobs:
       matrix:
         image: ['archlinux:latest', 'fedora:latest', 'debian:stable', 'opensuse/tumbleweed:latest']
     container: ${{ matrix.image }}
+    defaults:
+      run:
+        shell: bash   # containers default to sh; checks use bash syntax
     steps:
       - name: bootstrap sudo
         run: |
