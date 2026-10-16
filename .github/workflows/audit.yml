@@ -14,7 +14,7 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
       - id: syntax
@@ -35,14 +35,14 @@ jobs:
         env:
           STEPS: ${{ toJSON(steps) }}
         run: |
-          echo "$STEPS" | jq -r 'to_entries[] | "AUDIT \(.key): \(.value.outcome)"' | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "$STEPS" | jq -r 'to_entries[] | select(.key|test("^[0-9a-f]{32}$")|not) | "AUDIT \(.key): \(.value.outcome)"' | tee -a "$GITHUB_STEP_SUMMARY"
           ! echo "$STEPS" | jq -e 'to_entries[] | select(.value.outcome=="failure")' >/dev/null
 
   # Real VM with systemd-resolved and a live NIC.
   run-ubuntu:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           path: ipconfig src   # path with spaces on purpose
       - id: install
@@ -96,7 +96,7 @@ jobs:
         env:
           STEPS: ${{ toJSON(steps) }}
         run: |
-          echo "$STEPS" | jq -r 'to_entries[] | "AUDIT \(.key): \(.value.outcome)"' | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "$STEPS" | jq -r 'to_entries[] | select(.key|test("^[0-9a-f]{32}$")|not) | "AUDIT \(.key): \(.value.outcome)"' | tee -a "$GITHUB_STEP_SUMMARY"
           ! echo "$STEPS" | jq -e 'to_entries[] | select(.value.outcome=="failure")' >/dev/null
 
   # Installer branches for each distro family the README lists.
@@ -114,10 +114,10 @@ jobs:
           elif command -v dnf >/dev/null; then dnf install -y sudo git jq tar
           elif command -v zypper >/dev/null; then zypper -n in sudo git jq tar gzip
           else apt-get update && apt-get install -y sudo git jq; fi
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - id: install
         continue-on-error: true
-        run: ./install.sh
+        run: chmod +x install.sh && ./install.sh
       - id: deps_present
         continue-on-error: true
         run: command -v ip && command -v nmcli && command -v gawk
@@ -131,5 +131,5 @@ jobs:
         env:
           STEPS: ${{ toJSON(steps) }}
         run: |
-          echo "$STEPS" | jq -r 'to_entries[] | "AUDIT \(.key): \(.value.outcome)"' | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "$STEPS" | jq -r 'to_entries[] | select(.key|test("^[0-9a-f]{32}$")|not) | "AUDIT \(.key): \(.value.outcome)"' | tee -a "$GITHUB_STEP_SUMMARY"
           ! echo "$STEPS" | jq -e 'to_entries[] | select(.value.outcome=="failure")' >/dev/null
